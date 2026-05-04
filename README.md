@@ -41,6 +41,26 @@ docker exec openclaw-node-bastion kubectl config current-context
 docker exec openclaw-node-bastion openclaw node status
 ```
 
+## Update
+
+The node image is pinned through `.env`:
+
+```bash
+OPENCLAW_BASE_IMAGE_TAG=2026.5.2
+```
+
+Update to the latest stable official `ghcr.io/openclaw/openclaw` tag and
+restart the node:
+
+```bash
+/app/openclaw-node/scripts/update-openclaw-node-image
+```
+
+The compose file overrides the gateway image healthcheck with a node-mode
+process healthcheck. The update script also confirms that the paired `bastion`
+node is connected to the Kubernetes gateway. Old custom/base image tags are
+removed after a successful restart.
+
 ## Cron Prompt Pattern
 
 Prefer this pattern for gateway cron jobs that need bastion tools:

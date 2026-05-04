@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="${OPENCLAW_NODE_APP_DIR:-/app/openclaw-node}"
+ENV_FILE="${APP_DIR}/.env"
+SERVICE_NAME="${OPENCLAW_NODE_COMPOSE_SERVICE:-openclaw-node}"
+CONTAINER_NAME="${OPENCLAW_NODE_CONTAINER:-openclaw-node-bastion}"
+CUSTOM_IMAGE_REPO="${OPENCLAW_NODE_IMAGE_REPO:-openclaw-node-bastion}"
+BASE_IMAGE="${OPENCLAW_BASE_IMAGE:-ghcr.io/openclaw/openclaw}"
+DEFAULT_TAG="2026.5.2"
+HEALTH_TIMEOUT_SECONDS="${OPENCLAW_NODE_HEALTH_TIMEOUT_SECONDS:-240}"
+GATEWAY_NAMESPACE="${OPENCLAW_GATEWAY_NAMESPACE:-openclaw}"
+GATEWAY_POD="${OPENCLAW_GATEWAY_POD:-openclaw-0}"
+GATEWAY_CONTAINER="${OPENCLAW_GATEWAY_CONTAINER:-openclaw}"
+NODE_DISPLAY_NAME="${OPENCLAW_NODE_DISPLAY_NAME:-bastion}"
+
+log() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*"
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    log "missing required command: $1"
+    exit 1
+  }
+}
+
+current_tag() {
+  if [ -f "$ENV_FILE" ]; then
+    awk -F= '/^OPENCLAW_BASE_IMAGE_TAG=/ { print $2; found=1 } END { exit found ? 0 : 1 }' "$ENV_FILE" 2>/dev/null || true
+  fi
+}
+
+set_env_var() {
+  local key="$1"
+  local value="$2"
+  touch "$ENV_FILE"
+  if grep -q "^${key}=" "$ENV_FILE"; then
+    sed -i.bak -E "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+    rm -f "${ENV_FILE}.bak"
+  else
+    printf '%s=%s\n' "$key" "$value" >>"$ENV_FILE"
+  fi
+}
+
+latest_stable_tag() {
+  local tmpdir token url headers body next
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' RETURN
+
+  token="$(curl -fsSL "https://ghcr.io/token?service=ghcr.io&scope=repository:openclaw/openclaw:pull" | jq -r '.token')"
+  url="https://ghcr.io/v2/openclaw/openclaw/tags/list?n=1000"
+
+  while [ -n "$url" ]; do
+    headers="${tmpdir}/headers"
+    body="${tmpdir}/body"
+    curl -fsSL -D "$headers" -o "$body" -H "Authorization: Bearer ${token}" "$url"
+    jq -r '.tags[]?' "$body" >>"${tmpdir}/tags"
+
+    next="$(awk -F'[<>]' 'tolower($0) ~ /rel="next"/ { print $2 }' "$headers" | tail -n 1)"
+    case "$next" in
+      http*) url="$next" ;;
+      /*) url="https://ghcr.io${next}" ;;
+      *) url="" ;;
+    esac
+  done
+
+  jq -Rr '
+    select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))
+  ' "${tmpdir}/tags" | sort -V | tail -n 1
+}
+
+wait_for_container() {
+  local deadline status health
+  deadline=$((SECONDS + HEALTH_TIMEOUT_SECONDS))
+
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    status="$(docker inspect -f '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+    health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-health{{end}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+
+    if [ "$status" = "running" ] && { [ "$health" = "healthy" ] || [ "$health" = "no-health" ]; }; then
+      return 0
+    fi
+    sleep 5
+  done
+
+  docker ps --filter "name=${CONTAINER_NAME}" --format 'container={{.Names}} status={{.Status}} image={{.Image}}' || true
+  docker logs --tail 120 "$CONTAINER_NAME" || true
+  log "container did not become healthy within ${HEALTH_TIMEOUT_SECONDS}s"
+  return 1
+}
+
+verify_gateway_connection() {
+  local deadline
+  deadline=$((SECONDS + HEALTH_TIMEOUT_SECONDS))
+
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if kubectl -n "$GATEWAY_NAMESPACE" exec "$GATEWAY_POD" -c "$GATEWAY_CONTAINER" -- \
+      openclaw nodes status --json |
+      jq -e --arg name "$NODE_DISPLAY_NAME" '
+        .nodes[] | select(.displayName == $name and .paired == true and .connected == true)
+      ' >/dev/null; then
+      return 0
+    fi
+    sleep 5
+  done
+
+  log "gateway does not report node '${NODE_DISPLAY_NAME}' as connected"
+  return 1
+}
+
+main() {
+  require_cmd curl
+  require_cmd docker
+  require_cmd jq
+  require_cmd kubectl
+
+  cd "$APP_DIR"
+
+  local old_tag latest_tag previous_ref new_ref old_custom_refs old_base_refs
+  old_tag="$(current_tag)"
+  old_tag="${old_tag:-$DEFAULT_TAG}"
+  latest_tag="$(latest_stable_tag)"
+
+  if [ -z "$latest_tag" ]; then
+    log "could not determine latest stable tag for ${BASE_IMAGE}"
+    exit 1
+  fi
+
+  log "current configured tag: ${old_tag}"
+  log "latest stable official tag: ${latest_tag}"
+
+  if [ "$old_tag" = "$latest_tag" ]; then
+    log "already on latest tag; verifying node and gateway connectivity"
+    wait_for_container
+    docker exec "$CONTAINER_NAME" bastion-run true
+    verify_gateway_connection
+    log "node is healthy and connected"
+    exit 0
+  fi
+
+  previous_ref="$(docker inspect -f '{{.Config.Image}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+  new_ref="${CUSTOM_IMAGE_REPO}:${latest_tag}"
+
+  log "updating ${CUSTOM_IMAGE_REPO} from ${old_tag} to ${latest_tag}"
+  docker manifest inspect "${BASE_IMAGE}:${latest_tag}" >/dev/null
+  docker pull "${BASE_IMAGE}:${latest_tag}"
+
+  set_env_var OPENCLAW_BASE_IMAGE "$BASE_IMAGE"
+  set_env_var OPENCLAW_BASE_IMAGE_TAG "$latest_tag"
+  set_env_var OPENCLAW_NODE_IMAGE_REPO "$CUSTOM_IMAGE_REPO"
+
+  docker compose build --pull "$SERVICE_NAME"
+  docker compose up -d --force-recreate "$SERVICE_NAME"
+  wait_for_container
+
+  docker exec "$CONTAINER_NAME" bastion-run true
+  verify_gateway_connection
+
+  old_custom_refs="$(docker images "$CUSTOM_IMAGE_REPO" --format '{{.Repository}}:{{.Tag}}' | awk -v keep="$new_ref" '$0 != keep { print }')"
+  if [ -n "$old_custom_refs" ]; then
+    log "removing old custom images"
+    printf '%s\n' "$old_custom_refs" | xargs -r docker image rm || true
+  fi
+
+  old_base_refs="$(docker images "$BASE_IMAGE" --format '{{.Repository}}:{{.Tag}}' | awk -v keep="${BASE_IMAGE}:${latest_tag}" '$0 != keep { print }')"
+  if [ -n "$old_base_refs" ]; then
+    log "removing old official base image tags"
+    printf '%s\n' "$old_base_refs" | xargs -r docker image rm || true
+  fi
+
+  docker image prune -f >/dev/null || true
+
+  log "update completed: ${previous_ref:-unknown} -> ${new_ref}"
+}
+
+main "$@"

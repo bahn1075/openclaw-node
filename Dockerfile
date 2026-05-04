@@ -1,4 +1,7 @@
-FROM ghcr.io/openclaw/openclaw:2026.5.2
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw
+ARG OPENCLAW_BASE_IMAGE_TAG=2026.5.2
+
+FROM ${OPENCLAW_BASE_IMAGE}:${OPENCLAW_BASE_IMAGE_TAG}
 
 USER root
 
@@ -17,4 +20,3 @@ RUN chmod 0755 /usr/local/bin/bastion-run \
     && ln -sf /usr/local/lib/openclaw-node/sudo-wrapper /usr/local/bin/sudo
 
 WORKDIR /home/openclaw
-
