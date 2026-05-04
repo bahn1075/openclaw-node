@@ -25,7 +25,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - tr '\0' ' ' </proc/1/cmdline | grep -q 'openclaw node run'
+        - ps -ef | grep -q '[o]penclaw-node'
       interval: 30s
       timeout: 5s
       retries: 3
