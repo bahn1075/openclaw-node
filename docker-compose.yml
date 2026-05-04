@@ -1,0 +1,35 @@
+services:
+  openclaw-node:
+    build:
+      context: .
+    image: openclaw-node-bastion:2026.5.2
+    container_name: openclaw-node-bastion
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    user: "0:0"
+    environment:
+      HOME: /home/openclaw
+      OPENCLAW_STATE_DIR: /home/openclaw/.openclaw
+      OPENCLAW_NODE_GATEWAY_HOST: ${OPENCLAW_NODE_GATEWAY_HOST:-openclaw.tail651fca.ts.net}
+      OPENCLAW_NODE_GATEWAY_PORT: ${OPENCLAW_NODE_GATEWAY_PORT:-443}
+      OPENCLAW_NODE_DISPLAY_NAME: ${OPENCLAW_NODE_DISPLAY_NAME:-bastion}
+    volumes:
+      - /:/host:rw
+      - /home/opc:/home/opc:rw
+      - openclaw-node-state:/home/openclaw/.openclaw
+    command:
+      - openclaw
+      - node
+      - run
+      - --host
+      - ${OPENCLAW_NODE_GATEWAY_HOST:-openclaw.tail651fca.ts.net}
+      - --port
+      - ${OPENCLAW_NODE_GATEWAY_PORT:-443}
+      - --tls
+      - --display-name
+      - ${OPENCLAW_NODE_DISPLAY_NAME:-bastion}
+
+volumes:
+  openclaw-node-state:
+

@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+exec /usr/local/bin/bastion-run sudo "$@"
+

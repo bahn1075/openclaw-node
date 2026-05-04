@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+tool=$(basename "$0")
+exec /usr/local/bin/bastion-run "$tool" "$@"
+

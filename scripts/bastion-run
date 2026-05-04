@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+
+HOST_ROOT=${HOST_ROOT:-/host}
+HOST_USER=${HOST_USER:-opc}
+HOST_HOME=${HOST_HOME:-/home/opc}
+HOST_PATH=${HOST_PATH:-/home/opc/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}
+
+if [ ! -x "${HOST_ROOT}/usr/bin/sudo" ]; then
+  echo "host sudo not found at ${HOST_ROOT}/usr/bin/sudo" >&2
+  exit 127
+fi
+
+if [ "$#" -eq 0 ]; then
+  set -- /bin/bash -l
+fi
+
+exec chroot "${HOST_ROOT}" /usr/bin/sudo -H -u "${HOST_USER}" \
+  /usr/bin/env \
+  HOME="${HOST_HOME}" \
+  USER="${HOST_USER}" \
+  LOGNAME="${HOST_USER}" \
+  PATH="${HOST_PATH}" \
+  "$@"
+
