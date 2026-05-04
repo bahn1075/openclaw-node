@@ -21,6 +21,7 @@ container.
 
 ```bash
 cp .env.example .env
+$EDITOR .env
 docker compose up -d --build
 ```
 
@@ -52,4 +53,3 @@ bastion-run bash -lc '<existing bastion command or script>'
 
 Avoid installing OCI CLI, kubectl, or host-specific credentials in the
 Kubernetes OpenClaw pod.
-
