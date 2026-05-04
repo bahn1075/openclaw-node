@@ -14,6 +14,8 @@ GATEWAY_POD="${OPENCLAW_GATEWAY_POD:-openclaw-0}"
 GATEWAY_CONTAINER="${OPENCLAW_GATEWAY_CONTAINER:-openclaw}"
 NODE_DISPLAY_NAME="${OPENCLAW_NODE_DISPLAY_NAME:-bastion}"
 
+export PATH="/home/opc/bin:/home/opc/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:${PATH:-}"
+
 log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*"
 }
