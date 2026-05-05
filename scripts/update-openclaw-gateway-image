@@ -96,6 +96,14 @@ wait_for_gateway() {
   return 1
 }
 
+verify_gateway_http() {
+  docker exec "$CONTAINER_NAME" node -e "
+    fetch('http://127.0.0.1:${GATEWAY_PORT}/healthz')
+      .then((res) => process.exit(res.ok ? 0 : 1))
+      .catch(() => process.exit(1));
+  "
+}
+
 main() {
   require_cmd curl
   require_cmd docker
@@ -126,7 +134,7 @@ main() {
     log "already on latest tag; verifying gateway"
     wait_for_gateway
     docker exec "$CONTAINER_NAME" bastion-run true
-    docker exec "$CONTAINER_NAME" openclaw gateway health --port "$GATEWAY_PORT" --token "$gateway_token" >/dev/null
+    verify_gateway_http
     log "gateway is healthy"
     exit 0
   fi
@@ -147,7 +155,7 @@ main() {
   wait_for_gateway
 
   docker exec "$CONTAINER_NAME" bastion-run true
-  docker exec "$CONTAINER_NAME" openclaw gateway health --port "$GATEWAY_PORT" --token "$gateway_token" >/dev/null
+  verify_gateway_http
 
   old_custom_refs="$(docker images "$CUSTOM_IMAGE_REPO" --format '{{.Repository}}:{{.Tag}}' | awk -v keep="$new_ref" '$0 != keep { print }')"
   if [ -n "$old_custom_refs" ]; then
