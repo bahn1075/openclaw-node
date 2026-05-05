@@ -93,7 +93,7 @@ restore_previous_gateway() {
 cleanup_old_images() {
   local latest_tag="$1"
   local new_ref="$2"
-  local old_custom_refs old_base_refs
+  local old_custom_refs base_refs
 
   old_custom_refs="$(docker images "$CUSTOM_IMAGE_REPO" --format '{{.Repository}}:{{.Tag}}' | awk -v keep="$new_ref" '$0 != keep { print }')"
   if [ -n "$old_custom_refs" ]; then
@@ -101,10 +101,10 @@ cleanup_old_images() {
     printf '%s\n' "$old_custom_refs" | xargs -r docker image rm || true
   fi
 
-  old_base_refs="$(docker images "$BASE_IMAGE" --format '{{.Repository}}:{{.Tag}}' | awk -v keep="${BASE_IMAGE}:${latest_tag}" '$0 != keep { print }')"
-  if [ -n "$old_base_refs" ]; then
-    log "removing old official base image tags"
-    printf '%s\n' "$old_base_refs" | xargs -r docker image rm || true
+  base_refs="$(docker images "$BASE_IMAGE" --format '{{.Repository}}:{{.Tag}}')"
+  if [ -n "$base_refs" ]; then
+    log "removing official base image tags after successful gateway start"
+    printf '%s\n' "$base_refs" | xargs -r docker image rm || true
   fi
 
   docker image prune -f >/dev/null || true
@@ -207,6 +207,7 @@ main() {
     docker exec "$CONTAINER_NAME" bastion-run true
     verify_gateway_http
     verify_discord_plugin
+    cleanup_old_images "$latest_tag" "${CUSTOM_IMAGE_REPO}:${latest_tag}"
     log "gateway is healthy and Discord plugin is available"
     exit 0
   fi
@@ -233,6 +234,7 @@ main() {
 
   docker exec "$CONTAINER_NAME" bastion-run true
   verify_gateway_http
+  verify_discord_plugin
 
   ROLLBACK_NEEDED=0
   trap - ERR
