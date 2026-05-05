@@ -17,6 +17,8 @@ This lets OpenClaw gateway cron jobs and agents use the host's OCI CLI,
 kubeconfig, shell scripts, package managers, Docker, and Tailscale CLI while
 keeping OpenClaw itself in Docker.
 
+Browser control is intentionally not configured on bastion.
+
 ## Deploy
 
 ```bash

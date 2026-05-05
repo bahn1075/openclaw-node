@@ -14,7 +14,6 @@ services:
     environment:
       HOME: /home/openclaw
       OPENCLAW_STATE_DIR: /home/openclaw/.openclaw
-      OPENCLAW_CHROMIUM_CDP: ${OPENCLAW_CHROMIUM_CDP:-http://127.0.0.1:9222}
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:?set OPENCLAW_GATEWAY_TOKEN in .env}
     volumes:
       - /:/host:rw
@@ -40,21 +39,6 @@ services:
       - lan
       - --port
       - ${OPENCLAW_GATEWAY_PORT:-18789}
-
-  chromium:
-    image: docker.io/chromedp/headless-shell:stable
-    container_name: openclaw-gateway-chromium
-    restart: unless-stopped
-    network_mode: host
-    shm_size: 1gb
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - socat -T 2 - TCP4:127.0.0.1:9222,connect-timeout=2 </dev/null >/dev/null
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
 
 volumes:
   openclaw-node-state:
