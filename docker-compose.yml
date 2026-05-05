@@ -50,7 +50,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - ps -ef | grep -q '[h]eadless-shell'
+        - socat -T 2 - TCP4:127.0.0.1:9222,connect-timeout=2 </dev/null >/dev/null
       interval: 30s
       timeout: 5s
       retries: 5
