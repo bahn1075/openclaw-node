@@ -1,12 +1,12 @@
 services:
-  openclaw-node:
+  openclaw-gateway:
     build:
       context: .
       args:
         OPENCLAW_BASE_IMAGE: ${OPENCLAW_BASE_IMAGE:-ghcr.io/openclaw/openclaw}
         OPENCLAW_BASE_IMAGE_TAG: ${OPENCLAW_BASE_IMAGE_TAG:-2026.5.2}
-    image: ${OPENCLAW_NODE_IMAGE_REPO:-openclaw-node-bastion}:${OPENCLAW_BASE_IMAGE_TAG:-2026.5.2}
-    container_name: openclaw-node-bastion
+    image: ${OPENCLAW_GATEWAY_IMAGE_REPO:-openclaw-gateway-bastion}:${OPENCLAW_BASE_IMAGE_TAG:-2026.5.2}
+    container_name: openclaw-gateway-bastion
     restart: unless-stopped
     privileged: true
     network_mode: host
@@ -14,9 +14,7 @@ services:
     environment:
       HOME: /home/openclaw
       OPENCLAW_STATE_DIR: /home/openclaw/.openclaw
-      OPENCLAW_NODE_GATEWAY_HOST: ${OPENCLAW_NODE_GATEWAY_HOST:-openclaw.tail651fca.ts.net}
-      OPENCLAW_NODE_GATEWAY_PORT: ${OPENCLAW_NODE_GATEWAY_PORT:-443}
-      OPENCLAW_NODE_DISPLAY_NAME: ${OPENCLAW_NODE_DISPLAY_NAME:-bastion}
+      OPENCLAW_CHROMIUM_CDP: ${OPENCLAW_CHROMIUM_CDP:-http://127.0.0.1:9222}
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:?set OPENCLAW_GATEWAY_TOKEN in .env}
     volumes:
       - /:/host:rw
@@ -25,22 +23,38 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - ps -ef | grep -q '[o]penclaw-node'
+        - openclaw gateway health --port ${OPENCLAW_GATEWAY_PORT:-18789} --token "$$OPENCLAW_GATEWAY_TOKEN" >/dev/null
       interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     command:
       - openclaw
-      - node
+      - gateway
       - run
-      - --host
-      - ${OPENCLAW_NODE_GATEWAY_HOST:-openclaw.tail651fca.ts.net}
+      - --force
+      - --allow-unconfigured
+      - --auth
+      - token
+      - --bind
+      - lan
       - --port
-      - ${OPENCLAW_NODE_GATEWAY_PORT:-443}
-      - --tls
-      - --display-name
-      - ${OPENCLAW_NODE_DISPLAY_NAME:-bastion}
+      - ${OPENCLAW_GATEWAY_PORT:-18789}
+
+  chromium:
+    image: docker.io/chromedp/headless-shell:stable
+    container_name: openclaw-gateway-chromium
+    restart: unless-stopped
+    network_mode: host
+    shm_size: 1gb
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O- http://127.0.0.1:9222/json/version >/dev/null
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   openclaw-node-state:

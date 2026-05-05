@@ -1,18 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="${OPENCLAW_NODE_APP_DIR:-/app/openclaw-node}"
+APP_DIR="${OPENCLAW_GATEWAY_APP_DIR:-/app/openclaw-node}"
 ENV_FILE="${APP_DIR}/.env"
-SERVICE_NAME="${OPENCLAW_NODE_COMPOSE_SERVICE:-openclaw-node}"
-CONTAINER_NAME="${OPENCLAW_NODE_CONTAINER:-openclaw-node-bastion}"
-CUSTOM_IMAGE_REPO="${OPENCLAW_NODE_IMAGE_REPO:-openclaw-node-bastion}"
+SERVICE_NAME="${OPENCLAW_GATEWAY_COMPOSE_SERVICE:-openclaw-gateway}"
+CONTAINER_NAME="${OPENCLAW_GATEWAY_CONTAINER:-openclaw-gateway-bastion}"
+CUSTOM_IMAGE_REPO="${OPENCLAW_GATEWAY_IMAGE_REPO:-openclaw-gateway-bastion}"
 BASE_IMAGE="${OPENCLAW_BASE_IMAGE:-ghcr.io/openclaw/openclaw}"
 DEFAULT_TAG="2026.5.2"
-HEALTH_TIMEOUT_SECONDS="${OPENCLAW_NODE_HEALTH_TIMEOUT_SECONDS:-240}"
-GATEWAY_NAMESPACE="${OPENCLAW_GATEWAY_NAMESPACE:-openclaw}"
-GATEWAY_POD="${OPENCLAW_GATEWAY_POD:-openclaw-0}"
-GATEWAY_CONTAINER="${OPENCLAW_GATEWAY_CONTAINER:-openclaw}"
-NODE_DISPLAY_NAME="${OPENCLAW_NODE_DISPLAY_NAME:-bastion}"
+HEALTH_TIMEOUT_SECONDS="${OPENCLAW_GATEWAY_HEALTH_TIMEOUT_SECONDS:-240}"
+GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
 
 export PATH="/home/opc/bin:/home/opc/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:${PATH:-}"
 
@@ -30,6 +27,13 @@ require_cmd() {
 current_tag() {
   if [ -f "$ENV_FILE" ]; then
     awk -F= '/^OPENCLAW_BASE_IMAGE_TAG=/ { print $2; found=1 } END { exit found ? 0 : 1 }' "$ENV_FILE" 2>/dev/null || true
+  fi
+}
+
+env_value() {
+  local key="$1"
+  if [ -f "$ENV_FILE" ]; then
+    awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; found=1 } END { exit found ? 0 : 1 }' "$ENV_FILE" 2>/dev/null || true
   fi
 }
 
@@ -67,12 +71,10 @@ latest_stable_tag() {
     esac
   done
 
-  jq -Rr '
-    select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))
-  ' "${tmpdir}/tags" | sort -V | tail -n 1
+  jq -Rr 'select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' "${tmpdir}/tags" | sort -V | tail -n 1
 }
 
-wait_for_container() {
+wait_for_gateway() {
   local deadline status health
   deadline=$((SECONDS + HEALTH_TIMEOUT_SECONDS))
 
@@ -88,26 +90,7 @@ wait_for_container() {
 
   docker ps --filter "name=${CONTAINER_NAME}" --format 'container={{.Names}} status={{.Status}} image={{.Image}}' || true
   docker logs --tail 120 "$CONTAINER_NAME" || true
-  log "container did not become healthy within ${HEALTH_TIMEOUT_SECONDS}s"
-  return 1
-}
-
-verify_gateway_connection() {
-  local deadline
-  deadline=$((SECONDS + HEALTH_TIMEOUT_SECONDS))
-
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    if kubectl -n "$GATEWAY_NAMESPACE" exec "$GATEWAY_POD" -c "$GATEWAY_CONTAINER" -- \
-      openclaw nodes status --json |
-      jq -e --arg name "$NODE_DISPLAY_NAME" '
-        .nodes[] | select(.displayName == $name and .paired == true and .connected == true)
-      ' >/dev/null; then
-      return 0
-    fi
-    sleep 5
-  done
-
-  log "gateway does not report node '${NODE_DISPLAY_NAME}' as connected"
+  log "gateway did not become healthy within ${HEALTH_TIMEOUT_SECONDS}s"
   return 1
 }
 
@@ -115,17 +98,22 @@ main() {
   require_cmd curl
   require_cmd docker
   require_cmd jq
-  require_cmd kubectl
 
   cd "$APP_DIR"
 
-  local old_tag latest_tag previous_ref new_ref old_custom_refs old_base_refs
+  local old_tag latest_tag previous_ref new_ref old_custom_refs old_base_refs gateway_token
   old_tag="$(current_tag)"
   old_tag="${old_tag:-$DEFAULT_TAG}"
   latest_tag="$(latest_stable_tag)"
+  gateway_token="$(env_value OPENCLAW_GATEWAY_TOKEN)"
 
   if [ -z "$latest_tag" ]; then
     log "could not determine latest stable tag for ${BASE_IMAGE}"
+    exit 1
+  fi
+
+  if [ -z "$gateway_token" ]; then
+    log "OPENCLAW_GATEWAY_TOKEN is missing from ${ENV_FILE}"
     exit 1
   fi
 
@@ -133,11 +121,11 @@ main() {
   log "latest stable official tag: ${latest_tag}"
 
   if [ "$old_tag" = "$latest_tag" ]; then
-    log "already on latest tag; verifying node and gateway connectivity"
-    wait_for_container
+    log "already on latest tag; verifying gateway"
+    wait_for_gateway
     docker exec "$CONTAINER_NAME" bastion-run true
-    verify_gateway_connection
-    log "node is healthy and connected"
+    docker exec "$CONTAINER_NAME" openclaw gateway health --port "$GATEWAY_PORT" --token "$gateway_token" >/dev/null
+    log "gateway is healthy"
     exit 0
   fi
 
@@ -150,14 +138,14 @@ main() {
 
   set_env_var OPENCLAW_BASE_IMAGE "$BASE_IMAGE"
   set_env_var OPENCLAW_BASE_IMAGE_TAG "$latest_tag"
-  set_env_var OPENCLAW_NODE_IMAGE_REPO "$CUSTOM_IMAGE_REPO"
+  set_env_var OPENCLAW_GATEWAY_IMAGE_REPO "$CUSTOM_IMAGE_REPO"
 
   docker compose build --pull "$SERVICE_NAME"
   docker compose up -d --force-recreate "$SERVICE_NAME"
-  wait_for_container
+  wait_for_gateway
 
   docker exec "$CONTAINER_NAME" bastion-run true
-  verify_gateway_connection
+  docker exec "$CONTAINER_NAME" openclaw gateway health --port "$GATEWAY_PORT" --token "$gateway_token" >/dev/null
 
   old_custom_refs="$(docker images "$CUSTOM_IMAGE_REPO" --format '{{.Repository}}:{{.Tag}}' | awk -v keep="$new_ref" '$0 != keep { print }')"
   if [ -n "$old_custom_refs" ]; then
