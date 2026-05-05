@@ -12,6 +12,10 @@ BASE_IMAGE="${OPENCLAW_BASE_IMAGE:-ghcr.io/openclaw/openclaw}"
 DEFAULT_TAG="2026.5.2"
 HEALTH_TIMEOUT_SECONDS="${OPENCLAW_GATEWAY_HEALTH_TIMEOUT_SECONDS:-240}"
 GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
+ROLLBACK_NEEDED=0
+ROLLBACK_RUNNING=0
+ROLLBACK_OLD_TAG=""
+ROLLBACK_PREVIOUS_REF=""
 
 export PATH="/home/opc/bin:/home/opc/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:${PATH:-}"
 
@@ -49,6 +53,61 @@ set_env_var() {
   else
     printf '%s=%s\n' "$key" "$value" >>"$ENV_FILE"
   fi
+}
+
+restore_previous_gateway() {
+  local failed_status=$?
+
+  if [ "$ROLLBACK_NEEDED" != "1" ] || [ "$ROLLBACK_RUNNING" = "1" ]; then
+    exit "$failed_status"
+  fi
+
+  ROLLBACK_RUNNING=1
+  log "update failed; restoring previous gateway tag ${ROLLBACK_OLD_TAG:-unknown}"
+
+  set +e
+  if [ -n "$ROLLBACK_OLD_TAG" ]; then
+    set_env_var OPENCLAW_BASE_IMAGE "$BASE_IMAGE"
+    set_env_var OPENCLAW_BASE_IMAGE_TAG "$ROLLBACK_OLD_TAG"
+    set_env_var OPENCLAW_GATEWAY_IMAGE_REPO "$CUSTOM_IMAGE_REPO"
+
+    docker compose build "$SERVICE_NAME"
+    docker compose up -d --force-recreate "$SERVICE_NAME"
+    wait_for_gateway
+    docker exec "$CONTAINER_NAME" bastion-run true
+    verify_gateway_http
+    local rollback_status=$?
+
+    if [ "$rollback_status" -eq 0 ]; then
+      log "rollback completed: restored ${ROLLBACK_PREVIOUS_REF:-${CUSTOM_IMAGE_REPO}:${ROLLBACK_OLD_TAG}}"
+    else
+      log "rollback failed; manual intervention required for ${CONTAINER_NAME}"
+    fi
+  else
+    log "rollback skipped: previous tag is unknown"
+  fi
+
+  exit "$failed_status"
+}
+
+cleanup_old_images() {
+  local latest_tag="$1"
+  local new_ref="$2"
+  local old_custom_refs old_base_refs
+
+  old_custom_refs="$(docker images "$CUSTOM_IMAGE_REPO" --format '{{.Repository}}:{{.Tag}}' | awk -v keep="$new_ref" '$0 != keep { print }')"
+  if [ -n "$old_custom_refs" ]; then
+    log "removing old custom images"
+    printf '%s\n' "$old_custom_refs" | xargs -r docker image rm || true
+  fi
+
+  old_base_refs="$(docker images "$BASE_IMAGE" --format '{{.Repository}}:{{.Tag}}' | awk -v keep="${BASE_IMAGE}:${latest_tag}" '$0 != keep { print }')"
+  if [ -n "$old_base_refs" ]; then
+    log "removing old official base image tags"
+    printf '%s\n' "$old_base_refs" | xargs -r docker image rm || true
+  fi
+
+  docker image prune -f >/dev/null || true
 }
 
 latest_stable_tag() {
@@ -104,6 +163,13 @@ verify_gateway_http() {
   "
 }
 
+verify_discord_plugin() {
+  docker exec "$CONTAINER_NAME" sh -lc '
+    openclaw plugins list --json 2>/tmp/openclaw-discord-verify-warnings \
+      | grep -Eq "\"id\"[[:space:]]*:[[:space:]]*\"discord\""
+  '
+}
+
 main() {
   require_cmd curl
   require_cmd docker
@@ -111,7 +177,7 @@ main() {
 
   cd "$APP_DIR"
 
-  local old_tag latest_tag previous_ref new_ref old_custom_refs old_base_refs gateway_token
+  local old_tag latest_tag previous_ref new_ref gateway_token
   old_tag="$(current_tag)"
   old_tag="${old_tag:-$DEFAULT_TAG}"
   latest_tag="$(latest_stable_tag)"
@@ -131,20 +197,31 @@ main() {
   log "latest stable official tag: ${latest_tag}"
 
   if [ "$old_tag" = "$latest_tag" ]; then
-    log "already on latest tag; verifying gateway"
+    log "already on latest tag; rebuilding configured gateway image and verifying"
+    set_env_var OPENCLAW_BASE_IMAGE "$BASE_IMAGE"
+    set_env_var OPENCLAW_BASE_IMAGE_TAG "$latest_tag"
+    set_env_var OPENCLAW_GATEWAY_IMAGE_REPO "$CUSTOM_IMAGE_REPO"
+    docker compose build --pull "$SERVICE_NAME"
+    docker compose up -d --force-recreate "$SERVICE_NAME"
     wait_for_gateway
     docker exec "$CONTAINER_NAME" bastion-run true
     verify_gateway_http
-    log "gateway is healthy"
+    verify_discord_plugin
+    log "gateway is healthy and Discord plugin is available"
     exit 0
   fi
 
   previous_ref="$(docker inspect -f '{{.Config.Image}}' "$CONTAINER_NAME" 2>/dev/null || true)"
   new_ref="${CUSTOM_IMAGE_REPO}:${latest_tag}"
+  ROLLBACK_OLD_TAG="$old_tag"
+  ROLLBACK_PREVIOUS_REF="$previous_ref"
 
   log "updating ${CUSTOM_IMAGE_REPO} from ${old_tag} to ${latest_tag}"
   docker manifest inspect "${BASE_IMAGE}:${latest_tag}" >/dev/null
   docker pull "${BASE_IMAGE}:${latest_tag}"
+
+  trap restore_previous_gateway ERR
+  ROLLBACK_NEEDED=1
 
   set_env_var OPENCLAW_BASE_IMAGE "$BASE_IMAGE"
   set_env_var OPENCLAW_BASE_IMAGE_TAG "$latest_tag"
@@ -157,19 +234,10 @@ main() {
   docker exec "$CONTAINER_NAME" bastion-run true
   verify_gateway_http
 
-  old_custom_refs="$(docker images "$CUSTOM_IMAGE_REPO" --format '{{.Repository}}:{{.Tag}}' | awk -v keep="$new_ref" '$0 != keep { print }')"
-  if [ -n "$old_custom_refs" ]; then
-    log "removing old custom images"
-    printf '%s\n' "$old_custom_refs" | xargs -r docker image rm || true
-  fi
+  ROLLBACK_NEEDED=0
+  trap - ERR
 
-  old_base_refs="$(docker images "$BASE_IMAGE" --format '{{.Repository}}:{{.Tag}}' | awk -v keep="${BASE_IMAGE}:${latest_tag}" '$0 != keep { print }')"
-  if [ -n "$old_base_refs" ]; then
-    log "removing old official base image tags"
-    printf '%s\n' "$old_base_refs" | xargs -r docker image rm || true
-  fi
-
-  docker image prune -f >/dev/null || true
+  cleanup_old_images "$latest_tag" "$new_ref"
 
   log "update completed: ${previous_ref:-unknown} -> ${new_ref}"
 }

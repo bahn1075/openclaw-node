@@ -10,8 +10,10 @@ RUN mkdir -p /home/openclaw/.openclaw /usr/local/lib/openclaw-gateway
 COPY scripts/bastion-run /usr/local/bin/bastion-run
 COPY scripts/host-wrapper /usr/local/lib/openclaw-gateway/host-wrapper
 COPY scripts/sudo-wrapper /usr/local/lib/openclaw-gateway/sudo-wrapper
+COPY scripts/openclaw-gateway-entrypoint /usr/local/bin/openclaw-gateway-entrypoint
 
 RUN chmod 0755 /usr/local/bin/bastion-run \
+    /usr/local/bin/openclaw-gateway-entrypoint \
     /usr/local/lib/openclaw-gateway/host-wrapper \
     /usr/local/lib/openclaw-gateway/sudo-wrapper \
     && for tool in oci kubectl helm jq yq dnf brew systemctl journalctl docker crictl tailscale; do \

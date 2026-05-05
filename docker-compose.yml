@@ -15,6 +15,8 @@ services:
       HOME: /home/openclaw
       OPENCLAW_STATE_DIR: /home/openclaw/.openclaw
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:?set OPENCLAW_GATEWAY_TOKEN in .env}
+      OPENCLAW_DISCORD_ENABLED: ${OPENCLAW_DISCORD_ENABLED:-true}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
     volumes:
       - /:/host:rw
       - /home/opc:/home/opc:rw
@@ -28,6 +30,7 @@ services:
       retries: 5
       start_period: 30s
     command:
+      - openclaw-gateway-entrypoint
       - openclaw
       - gateway
       - run

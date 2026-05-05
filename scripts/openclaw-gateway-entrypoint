@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+log() {
+  printf '[openclaw-gateway] %s\n' "$*" >&2
+}
+
+json_plugin_exists() {
+  node -e '
+    let input = "";
+    process.stdin.on("data", (chunk) => { input += chunk; });
+    process.stdin.on("end", () => {
+      try {
+        const parsed = JSON.parse(input);
+        const plugin = Array.isArray(parsed.plugins)
+          ? parsed.plugins.find((entry) => entry && entry.id === "discord")
+          : null;
+        process.exit(plugin ? 0 : 1);
+      } catch {
+        process.exit(1);
+      }
+    });
+  '
+}
+
+discord_plugin_available() {
+  openclaw plugins list --json 2>/tmp/openclaw-discord-plugin-warnings | json_plugin_exists
+}
+
+discord_channel_configured() {
+  local config_file="${OPENCLAW_STATE_DIR:-/home/openclaw/.openclaw}/openclaw.json"
+
+  [ -f "$config_file" ] || return 1
+
+  node -e '
+    const fs = require("fs");
+    const file = process.argv[1];
+    try {
+      const config = JSON.parse(fs.readFileSync(file, "utf8"));
+      process.exit(config.channels && config.channels.discord ? 0 : 1);
+    } catch {
+      process.exit(1);
+    }
+  ' "$config_file"
+}
+
+ensure_discord_plugin() {
+  if [ "${OPENCLAW_DISCORD_ENABLED:-true}" = "false" ]; then
+    log "Discord plugin bootstrap disabled by OPENCLAW_DISCORD_ENABLED=false"
+    return 0
+  fi
+
+  log "refreshing OpenClaw plugin registry"
+  openclaw plugins registry --refresh >/tmp/openclaw-discord-registry-refresh 2>&1 || {
+    log "plugin registry refresh failed; continuing to install check"
+  }
+
+  if ! discord_plugin_available; then
+    log "installing official Discord plugin"
+    openclaw plugins install clawhub:@openclaw/discord
+    openclaw plugins registry --refresh >/tmp/openclaw-discord-registry-refresh 2>&1 || true
+  fi
+
+  log "enabling Discord plugin"
+  openclaw plugins enable discord >/tmp/openclaw-discord-enable 2>&1 || {
+    log "Discord plugin enable command failed"
+    sed -n '1,120p' /tmp/openclaw-discord-enable >&2 || true
+    return 1
+  }
+
+  if [ -n "${DISCORD_BOT_TOKEN:-}" ] && ! discord_channel_configured; then
+    log "adding Discord channel account backed by DISCORD_BOT_TOKEN"
+    openclaw channels add --channel discord --use-env --account default --name Discord
+  elif [ -z "${DISCORD_BOT_TOKEN:-}" ]; then
+    log "DISCORD_BOT_TOKEN is not set; Discord plugin is installed but channel login is not configured"
+  else
+    log "Discord channel config already exists"
+  fi
+}
+
+ensure_discord_plugin
+
+exec "$@"
