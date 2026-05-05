@@ -23,7 +23,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - openclaw gateway health --port ${OPENCLAW_GATEWAY_PORT:-18789} --token "$$OPENCLAW_GATEWAY_TOKEN" >/dev/null
+        - node -e "fetch('http://127.0.0.1:${OPENCLAW_GATEWAY_PORT:-18789}/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
       interval: 30s
       timeout: 10s
       retries: 5
@@ -50,7 +50,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - wget -q -O- http://127.0.0.1:9222/json/version >/dev/null
+        - ps -ef | grep -q '[h]eadless-shell'
       interval: 30s
       timeout: 5s
       retries: 5
