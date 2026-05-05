@@ -8,7 +8,7 @@ Existing bastion jobs found in the previous OpenClaw cron state:
 | daily dnf+brew update report | `50 8 * * *` Asia/Seoul | yes | `bastion-run /home/opc/clawd/scripts/daily_update_run_and_report.sh` |
 | weekly disk cleanup | `30 9 * * 0` Asia/Seoul | yes | `bastion-run sudo -n /home/opc/cronjob/disk-cleanup.sh` |
 | weekly Helm Chart update | `0 10 * * 5` Asia/Seoul | yes | `bastion-run /home/opc/cronjob/helm-update.sh` |
-| OpenClaw bastion gateway image update | `30 8 * * *` Asia/Seoul | yes | `bastion-run /app/openclaw-node/scripts/update-openclaw-gateway-image` |
+| OpenClaw bastion gateway image update | `30 8 * * *` Asia/Seoul | yes | `bastion-run /app/openclaw-docker/scripts/update-openclaw-gateway-image` |
 | openclaw-self-update | `0 1 * * *` Asia/Seoul | no | skip; the Docker image update job replaces it |
 | openclaw-update-report | `0 10 * * *` Asia/Seoul | no | skip unless a report-only job is still wanted |
 

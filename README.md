@@ -52,7 +52,7 @@ Update to the latest stable official `ghcr.io/openclaw/openclaw` tag and
 restart the gateway:
 
 ```bash
-/app/openclaw-node/scripts/update-openclaw-gateway-image
+/app/openclaw-docker/scripts/update-openclaw-gateway-image
 ```
 
 The update script verifies the gateway health endpoint and the bastion host-tool

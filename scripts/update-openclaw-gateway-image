@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="${OPENCLAW_GATEWAY_APP_DIR:-/app/openclaw-node}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_APP_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+APP_DIR="${OPENCLAW_GATEWAY_APP_DIR:-$DEFAULT_APP_DIR}"
 ENV_FILE="${APP_DIR}/.env"
 SERVICE_NAME="${OPENCLAW_GATEWAY_COMPOSE_SERVICE:-openclaw-gateway}"
 CONTAINER_NAME="${OPENCLAW_GATEWAY_CONTAINER:-openclaw-gateway-bastion}"
