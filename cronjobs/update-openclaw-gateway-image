@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Cron-safe launcher for the OpenClaw Docker gateway image updater.
+#
+# Do not run scripts/update-openclaw-gateway-image directly from the gateway
+# cron. That script recreates the gateway container, so a foreground cron run
+# inside the same container can be killed midway and leave Docker Compose in a
+# partially replaced state.
+
+APP_DIR="${OPENCLAW_GATEWAY_APP_DIR:-/app/openclaw-docker}"
+ENV_FILE="${APP_DIR}/.env"
+UPDATE_SCRIPT="${OPENCLAW_GATEWAY_UPDATE_SCRIPT:-${APP_DIR}/scripts/update-openclaw-gateway-image}"
+SCRIPT_ON_HOST="${OPENCLAW_GATEWAY_CRON_UPDATE_SCRIPT:-${APP_DIR}/cronjobs/update-openclaw-gateway-image}"
+BASTION_RUN="${OPENCLAW_BASTION_RUN:-bastion-run}"
+LOG_DIR="${OPENCLAW_GATEWAY_UPDATE_LOG_DIR:-${APP_DIR}/logs}"
+LOG_FILE="${OPENCLAW_GATEWAY_UPDATE_LOG_FILE:-${LOG_DIR}/openclaw-gateway-self-update.log}"
+LOCK_PATH="${OPENCLAW_GATEWAY_UPDATE_LOCK:-/tmp/openclaw-gateway-self-update.lock}"
+BASE_IMAGE="${OPENCLAW_BASE_IMAGE:-ghcr.io/openclaw/openclaw}"
+DEFAULT_TAG="2026.5.2"
+
+export PATH="/home/opc/bin:/home/opc/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:${PATH:-}"
+
+log() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*"
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    log "missing required command: $1"
+    exit 127
+  }
+}
+
+env_value() {
+  local key="$1"
+  if [ -f "$ENV_FILE" ]; then
+    awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; found=1 } END { exit found ? 0 : 1 }' "$ENV_FILE" 2>/dev/null || true
+  fi
+}
+
+current_tag() {
+  env_value OPENCLAW_BASE_IMAGE_TAG
+}
+
+latest_stable_tag() {
+  local tmpdir token url headers body next
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' RETURN
+
+  token="$(curl -fsSL "https://ghcr.io/token?service=ghcr.io&scope=repository:openclaw/openclaw:pull" | jq -r '.token')"
+  url="https://ghcr.io/v2/openclaw/openclaw/tags/list?n=1000"
+
+  while [ -n "$url" ]; do
+    headers="${tmpdir}/headers"
+    body="${tmpdir}/body"
+    curl -fsSL -D "$headers" -o "$body" -H "Authorization: Bearer ${token}" "$url"
+    jq -r '.tags[]?' "$body" >>"${tmpdir}/tags"
+
+    next="$(awk -F'[<>]' 'tolower($0) ~ /rel="next"/ { print $2 }' "$headers" | tail -n 1)"
+    case "$next" in
+      http*) url="$next" ;;
+      /*) url="https://ghcr.io${next}" ;;
+      *) url="" ;;
+    esac
+  done
+
+  jq -Rr 'select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' "${tmpdir}/tags" | sort -V | tail -n 1
+}
+
+dispatch_from_gateway() {
+  require_cmd "$BASTION_RUN"
+
+  "$BASTION_RUN" bash -c "
+    mkdir -p '${LOG_DIR}'
+    nohup env OPENCLAW_GATEWAY_SELF_UPDATE_HOST_MODE=1 OPENCLAW_GATEWAY_APP_DIR='${APP_DIR}' '${SCRIPT_ON_HOST}' --host-run >>'${LOG_FILE}' 2>&1 </dev/null &
+  "
+
+  log "dispatched detached gateway update on bastion host"
+  log "host log: ${LOG_FILE}"
+}
+
+run_on_host() {
+  require_cmd curl
+  require_cmd docker
+  require_cmd jq
+  require_cmd flock
+
+  exec 9>"$LOCK_PATH"
+  if ! flock -n 9; then
+    log "another gateway update is already running; skip"
+    exit 0
+  fi
+
+  if [ ! -x "$UPDATE_SCRIPT" ]; then
+    log "update script is not executable: ${UPDATE_SCRIPT}"
+    exit 1
+  fi
+
+  local old_tag latest_tag
+  old_tag="$(current_tag)"
+  old_tag="${old_tag:-$DEFAULT_TAG}"
+  latest_tag="$(latest_stable_tag)"
+
+  if [ -z "$latest_tag" ]; then
+    log "could not determine latest stable tag for ${BASE_IMAGE}"
+    exit 1
+  fi
+
+  log "current configured tag: ${old_tag}"
+  log "latest stable official tag: ${latest_tag}"
+
+  if [ "$old_tag" = "$latest_tag" ]; then
+    log "already on latest tag; no gateway restart needed"
+    exit 0
+  fi
+
+  log "new tag found; running ${UPDATE_SCRIPT}"
+  cd "$APP_DIR"
+  exec "$UPDATE_SCRIPT"
+}
+
+main() {
+  case "${1:-}" in
+    --host-run)
+      shift
+      run_on_host "$@"
+      ;;
+    *)
+      if [ "${OPENCLAW_GATEWAY_SELF_UPDATE_HOST_MODE:-0}" != "1" ] \
+        && [ -d /host/app/openclaw-docker ] \
+        && command -v "$BASTION_RUN" >/dev/null 2>&1; then
+        dispatch_from_gateway
+      else
+        run_on_host "$@"
+      fi
+      ;;
+  esac
+}
+
+main "$@"
